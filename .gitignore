@@ -24,3 +24,5 @@ coverage.xml
 .hypothesis
 backend/vreg_app3.py
 frontend/index.html
+"backend/vreg_app3.py" 
+"frontend/index.html" 
