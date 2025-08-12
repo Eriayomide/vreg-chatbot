@@ -2,14 +2,18 @@ services:
   - type: web
     name: vreg-chatbot-backend
     env: python
-    plan: free
-    runtime: python-3.11.9
     buildCommand: |
+      echo "🔍 Checking Python version..."
+      python --version
+      PY_VER=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')
+      if [ "$PY_VER" != "3.11.9" ]; then
+        echo "❌ ERROR: Expected Python 3.11.9 but got $PY_VER"
+        exit 1
+      fi
+      echo "✅ Python version OK"
       pip install --upgrade pip setuptools wheel
       pip install -r backend/requirements.txt
-    startCommand: gunicorn --chdir backend vreg_app:app --bind 0.0.0.0:$PORT
+    startCommand: python backend/vreg_app3.py
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "true"
-      - key: PYTHONDONTWRITEBYTECODE
-        value: "1"
+      - key: PYTHON_VERSION
+        value: 3.11.9
