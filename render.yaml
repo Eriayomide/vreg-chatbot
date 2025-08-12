@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: vreg-chatbot-backend
+    env: python
+    plan: free
+    runtime: python-3.11.9
+    buildCommand: |
+      pip install --upgrade pip setuptools wheel
+      pip install -r backend/requirements.txt
+    startCommand: gunicorn --chdir backend vreg_app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "true"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
