@@ -339,8 +339,10 @@
 
     <script>
         // Backend connection settings
-        const BACKEND_URL = 'http://localhost:5000';
-        let isConnected = false;
+// Production backend URL - uses same domain as frontend
+const BACKEND_URL = `${window.location.protocol}//${window.location.hostname}${window.location.port ? ':' + window.location.port : ''}`;
+console.log('Using BACKEND_URL:', BACKEND_URL);
+let isConnected = false;
 
         // Check backend connection
         async function checkConnection() {

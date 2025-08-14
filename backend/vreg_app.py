@@ -604,3 +604,20 @@ def process_text():
 
 if __name__ == "__main__":
     app.run(debug=True)
+# Add these imports at the top if not already there
+from flask import send_from_directory, send_file
+
+# Add this route to serve your frontend
+@app.route('/')
+def serve_frontend():
+    """Serve the main frontend page"""
+    try:
+        return send_file('frontend/index2.html')
+    except FileNotFoundError:
+        return "Frontend not found. Please ensure frontend/index2.html exists.", 404
+
+# Replace your existing if __name__ == "__main__": section with this:
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('FLASK_ENV') != 'production'
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
