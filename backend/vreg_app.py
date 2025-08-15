@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 import os
-import groq
+from groq import Groq
 from flask_cors import CORS
 from dotenv import load_dotenv
 import chromadb
@@ -15,9 +15,8 @@ from threading import Lock
 # Load environment variables
 load_dotenv()
 groq_api_key = os.getenv("GROQ_API_KEY")
-print(f"API Key loaded: {'Yes' if groq_api_key else 'No'}")  # Temporary debug line
-client = groq.Groq(api_key=groq_api_key)
-
+print(f"API Key loaded: {'Yes' if groq_api_key else 'No'}")  # Keep this for now
+client = Groq(api_key=groq_api_key)
 app = Flask(__name__)
 CORS(app)
 
