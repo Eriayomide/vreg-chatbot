@@ -19,16 +19,7 @@ print(f"API Key loaded: {'Yes' if groq_api_key else 'No'}")
 client = Groq(api_key=groq_api_key)
 app = Flask(__name__)
 CORS(app)
-The key changes:
 
-Use latest groq version (no version specified = latest)
-Correct import: from groq import Groq
-Correct initialization: Groq(api_key=groq_api_key)
-
-Commit and push:
-cmdgit add .
-git commit -m "Use latest groq version and official import pattern from docs"
-git push origin mainRetryClaude does not have the ability to run the code it generates yet.Claude can make mistakes. Please double-check cited sources.
 
 # In-memory conversation store
 conversations = {}
