@@ -15,7 +15,8 @@ COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip cache purge
+RUN pip install --no-cache-dir --force-reinstall -r requirements.txt
 
 # Copy the entire project structure
 COPY . .
