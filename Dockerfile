@@ -1,23 +1,32 @@
 # Use Python 3.11 instead of 3.13 to avoid compatibility issues
 FROM python:3.11.9-slim
+
 # Set working directory
 WORKDIR /app
+
 # Install system dependencies needed for some Python packages
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
+
 # Copy requirements first (for better caching)
 COPY requirements.txt .
+
 # Upgrade pip and install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
-# Copy the rest of your application
+
+# Copy the entire project structure
 COPY . .
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PORT=10000
+
 # Expose the port
 EXPOSE 10000
-# Command to run your Flask app (using your actual filename)
+
+# Change to backend directory and run the Flask app
+WORKDIR /app/backend
 CMD ["python", "vreg_app.py"]
