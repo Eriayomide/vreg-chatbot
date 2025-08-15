@@ -1,4 +1,4 @@
-"# Use Python 3.11 instead of 3.13 to avoid compatibility issues
+# Use Python 3.11 instead of 3.13 to avoid compatibility issues
 FROM python:3.11.9-slim
 # Set working directory
 WORKDIR /app
