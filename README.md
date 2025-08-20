@@ -57,7 +57,7 @@ An intelligent chatbot assistant for the National Vehicle Registry (VREG) platfo
 
 4. **Run the backend server**
    ```bash
-   python vreg_app3.py
+   python vreg_app.py
    ```
    Backend will be available at: `http://localhost:5000`
 
@@ -114,11 +114,11 @@ Content-Type: application/json
 ### Environment Variables
 ```env
 GROQ_API_KEY=your_groq_api_key
-PORT=5000
+PORT=8080
 ```
 
 ### Customization
-- **Add new FAQs**: Edit the `vreg_faqs` list in `vreg_app3.py`
+- **Add new FAQs**: Edit the `vreg_faqs` list in `vreg_app.py`
 - **Change AI model**: Modify the model parameter in the GROQ API call
 - **Adjust response style**: Update the system prompt in `generate_rag_response()`
 
@@ -133,7 +133,7 @@ PORT=5000
    - Add `GROQ_API_KEY` environment variable
 
 2. **Frontend Deployment**
-   - Create new Static Site on Render
+   - Create new Static Site on Google Cloud Run
    - Connect same GitHub repository
    - Set root directory to `frontend`
    - Update `BACKEND_URL` in `index2.html` to your backend URL
