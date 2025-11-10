@@ -1,6 +1,6 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory, session, send_file
 import os
-from groq import Groq
+from anthropic import Anthropic  # ✅ Changed from Groq
 from flask_cors import CORS
 from dotenv import load_dotenv
 import chromadb
@@ -14,10 +14,15 @@ from threading import Lock
 
 # Load environment variables
 load_dotenv()
-groq_api_key = os.getenv("GROQ_API_KEY")
-print(f"API Key loaded: {'Yes' if groq_api_key else 'No'}")
-client = Groq(api_key=groq_api_key)
+anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")  # ✅ Changed
+print(f"API Key loaded: {'Yes' if anthropic_api_key else 'No'}")
+client = Anthropic(api_key=anthropic_api_key)  # ✅ Changed
 app = Flask(__name__)
+# 🔑 Secret key for Flask sessions
+app.secret_key = os.environ.get(
+    "FLASK_SECRET_KEY",
+    "dev-secret"  # fallback for local dev
+)
 CORS(app)
 
 
@@ -26,7 +31,7 @@ conversations = {}
 conversations_lock = Lock()
 
 class ConversationManager:
-    """Manage conversation state including user names"""
+    """Manage conversation state including user names and message history"""
     
     def __init__(self):
         self.conversations = {}
@@ -39,7 +44,8 @@ class ConversationManager:
                 self.conversations[conversation_id] = {
                     'user_name': None,
                     'created_at': time.time(),
-                    'last_activity': time.time()
+                    'last_activity': time.time(),
+                    'messages': []  # 🆕 Added: Store conversation history
                 }
             else:
                 self.conversations[conversation_id]['last_activity'] = time.time()
@@ -58,6 +64,29 @@ class ConversationManager:
             conv = self.conversations.get(conversation_id)
             return conv['user_name'] if conv else None
     
+    def add_message(self, conversation_id: str, role: str, content: str):
+        """🆕 Added: Add a message to conversation history"""
+        with self.lock:
+            if conversation_id in self.conversations:
+                self.conversations[conversation_id]['messages'].append({
+                    'role': role,
+                    'content': content,
+                    'timestamp': time.time()
+                })
+                # Keep only last 10 messages to avoid token limits
+                if len(self.conversations[conversation_id]['messages']) > 10:
+                    self.conversations[conversation_id]['messages'] = \
+                        self.conversations[conversation_id]['messages'][-10:]
+                self.conversations[conversation_id]['last_activity'] = time.time()
+    
+    def get_conversation_history(self, conversation_id: str, max_messages: int = 10) -> List[Dict]:
+        """🆕 Added: Get conversation history"""
+        with self.lock:
+            conv = self.conversations.get(conversation_id)
+            if conv and 'messages' in conv:
+                return conv['messages'][-max_messages:]
+            return []
+    
     def cleanup_old_conversations(self, max_age_hours: int = 24):
         """Clean up conversations older than max_age_hours"""
         with self.lock:
@@ -70,125 +99,128 @@ class ConversationManager:
             for conv_id in to_remove:
                 del self.conversations[conv_id]
 
+# 🔧 FIX #1: Initialize the ConversationManager
+conversation_manager = ConversationManager()
+
 # Initialize SentenceTransformer
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # VREG Knowledge Base
 vreg_faqs = [
     {
-        "question": "I am not getting my confirmation link after registration",
-        "answer": "Check your spam folder or confirm if you used the correct email address in creating a VREG account.",
-        "category": "registration"
+        "question": 'I am not getting my confirmation link after registration',
+        "answer": 'Check your spam folder or confirm if you used the correct email address in creating a VREG account.',
+        "category": 'registration'
     },
     {
-        "question": "After inputting my TIN on the portal, it brought out an Invalid statement",
-        "answer": "Go to www.trade.gov.ng, click on Agencies then FIRS to validate your TIN",
-        "category": "registration"
+        "question": 'After inputting my TIN on the portal, it brought out an Invalid statement',
+        "answer": 'Go to www.trade.gov.ng, click on Agencies then FIRS to validate your TIN',
+        "category": 'registration'
     },
     {
-        "question": "I cannot access my dashboard because I forgot the password",
-        "answer": "Go to www.vreg.gov.ng, click on login, then forget password, enter the email address used during registration and click on recover. A link will be sent to your email, click on the link and create a new password.",
-        "category": "registration"
+        "question": 'I cannot access my dashboard because I forgot the password',
+        "answer": 'Please visit www.vreg.gov.ng and click on “Login.”\nNext, select “Forgot Password” and enter the email address you used during registration.\nA password recovery link will be sent to your email — simply click on the link and follow the instructions to create a new password.',
+        "category": 'registration'
     },
     {
-        "question": "I tried to register for VREG but after inputting my TIN/Agency code it says TIN/Agency code has been taken",
-        "answer": "Your agency already has an account created with VREG, kindly confirm the email address used during the registration and reset your password to be able to login successfully.",
-        "category": "registration"
+        "question": 'I tried to register for VREG but after inputting my TIN/Agency code it says TIN/Agency code has been taken',
+        "answer": 'Your agency already has an account created with VREG, kindly confirm the email address used during the registration and reset your password to be able to login successfully.',
+        "category": 'registration'
     },
     {
         "question": "The portal is not recognizing my VIN, showing 'Warning! This is a non-standard VIN'",
-        "answer": "This is a non-standard VIN that needs manual validation. Input the HS code and VIN number, then click submit. A prompt will appear, click try again, submit the VIN and HS code, click next and input the vehicle information and submit while you await VIN validation.",
-        "category": "vin_validation"
+        "answer": 'This VIN appears to be non-standard and requires manual validation.\nPlease enter the HS code and VIN number, then click “Submit.”\nWhen the prompt appears, select “Decode Manually,” enter the vehicle details, and click “Submit” again.\nAfter submission, kindly wait while the VIN is being validated.',
+        "category": 'vin_validation'
     },
     {
         "question": "I submitted my VIN for validation and it's showing on the Pending tab",
-        "answer": "Your VIN has been validated manually, kindly generate an invoice and proceed to make payment.",
-        "category": "vin_validation"
+        "answer": 'Your VIN has been validated manually, kindly generate an invoice and proceed to make payment.',
+        "category": 'vin_validation'
     },
     {
-        "question": "I submitted a wrong VIN for manual validation, how can I cancel it?",
-        "answer": "The VIN will automatically be erased from your dashboard once the due date elapses.",
-        "category": "vin_validation"
+        "question": 'I submitted a wrong VIN for manual validation, how can I cancel it?',
+        "answer": 'The VIN will automatically be erased from your dashboard once the due date elapses.',
+        "category": 'vin_validation'
     },
     {
-        "question": "SGD Portal is telling me VREG does not exist",
-        "answer": "Take a screenshot of the error message and attach the affected VREG certificate and send it to support@vreg.gov.ng",
-        "category": "transmission"
+        "question": 'SGD Portal is telling me VREG does not exist',
+        "answer": 'Take a screenshot of the error message and attach the affected VREG certificate and send it to support@vreg.gov.ng',
+        "category": 'transmission'
     },
     {
-        "question": "My VREG certificate information was not transmitted to customs ESGD platform",
-        "answer": "This is a transmission case where VREG certificate information failed to reach customs. Please contact support@vreg.gov.ng with your certificate details and error screenshots.",
-        "category": "transmission"
+        "question": 'My VREG certificate information was not transmitted to customs ESGD platform',
+        "answer": 'This is a transmission case where VREG certificate information failed to reach customs. Please contact support@vreg.gov.ng with your certificate details and error screenshots.',
+        "category": 'transmission'
     },
     {
-        "question": "I made a payment for a VREG certificate but no certificate was generated",
-        "answer": "Send the invoice number, payment proof and the date payment were made to payments@vreg.gov.ng",
-        "category": "payment"
+        "question": 'I made a payment for a VREG certificate but no certificate was generated',
+        "answer": 'Send the invoice number, payment proof and the date payment were made to payments@vreg.gov.ng',
+        "category": 'payment'
     },
     {
-        "question": "How can I get access to the certificate which I generated on the VREG portal?",
-        "answer": "Login to your dashboard, click on certificate and then enter either the invoice number or VIN for the vehicle on the search tab to be able to view the certificate.",
-        "category": "payment"
+        "question": 'How can I get access to the certificate which I generated on the VREG portal?',
+        "answer": 'Login to your dashboard, click on certificate and then enter either the invoice number or VIN for the vehicle on the search tab to be able to view the certificate.',
+        "category": 'payment'
     },
     {
-        "question": "My VIN is generating multiple invoices. Can I make the payment?",
-        "answer": "Select a single Invoice number and proceed to initiate payment for the VIN.",
-        "category": "payment"
+        "question": 'My VIN is generating multiple invoices. Can I make the payment?',
+        "answer": 'Select a single Invoice number and proceed to initiate payment for the VIN.',
+        "category": 'payment'
     },
     {
-        "question": "My payment is under investigation",
-        "answer": "Kindly note that this issue is under investigation. Once the payment has been confirmed successful, the VREG certificate will be generated. Endeavor to check your payment status occasionally.",
-        "category": "payment"
+        "question": 'My payment is under investigation',
+        "answer": 'Kindly note that this issue is under investigation. Once the payment has been confirmed successful, the VREG certificate will be generated. Endeavor to check your payment status occasionally.',
+        "category": 'payment'
     },
     {
-        "question": "My payment transaction was unsuccessful",
-        "answer": "Kindly note that your payment transaction was unsuccessful on this invoice. Reach out or contact your bank to log a complaint or seek a reversal.",
-        "category": "payment"
+        "question": 'My payment transaction was unsuccessful',
+        "answer": 'Kindly note that your payment transaction was unsuccessful on this invoice. Reach out or contact your bank to log a complaint or seek a reversal.',
+        "category": 'payment'
     },
     {
-        "question": "How do I request a refund?",
-        "answer": "Kindly fill in your details to process your refund: Full Name, Email Address, Phone Number, Excess Amount Paid, Invoice Number, Proof of Payment, Account Number, Account Name, Transaction Date, Bank Name. Your refund will be processed within 3-7 working days.",
-        "category": "payment"
+        "question": 'How do I request a refund?',
+        "answer": 'Kindly fill in your details to process your refund: Full Name, Email Address, Phone Number, Excess Amount Paid, Invoice Number, Proof of Payment, Account Number, Account Name, Transaction Date, Bank Name. Your refund will be processed within 3-7 working days.',
+        "category": 'payment'
     },
     {
-        "question": "The Agency we used for capturing has been blocked. I want to change to another",
-        "answer": "The consignee should write a letter of cancellation of VREG certificate addressing it to the managing director of VREG, and attach the bill of lading, VREG certificate and a CAC certificate (if consignee is a company) or a Valid means of identification (if consignee is an individual) and send it to support@vreg.gov.ng",
-        "category": "agency"
+        "question": 'The Agency we used for capturing has been blocked. I want to change to another',
+        "answer": 'The consignee should write a letter of cancellation of VREG certificate addressing it to the managing director of VREG, and attach the bill of lading, VREG certificate and a CAC certificate (if consignee is a company) or a Valid means of identification (if consignee is an individual) and send it to support@vreg.gov.ng',
+        "category": 'agency'
     },
     {
-        "question": "A wrong consignee TIN was used in generating a VREG certificate",
-        "answer": "The agency should write a letter of cancellation of the VREG certificate addressing it to the managing director of VREG, and attach the bill of lading and VREG certificate.",
-        "category": "agency"
+        "question": 'A wrong consignee TIN was used in generating a VREG certificate',
+        "answer": 'The agency should write a letter of cancellation of the VREG certificate addressing it to the managing director of VREG, and attach the bill of lading and VREG certificate.',
+        "category": 'agency'
     },
     {
         "question": "I cannot access the Vehicle on Custom portal because it says the company's code on VREG is different from that on ESGD",
         "answer": "Kindly enter the correct consignee's TIN that was used in generating the VREG certificate to be able to access the Vehicle on customs portal.",
-        "category": "agency"
+        "category": 'agency'
     },
     {
         "question": "After entering my correct login details an error message pop up saying 'this field is required'",
-        "answer": "Ensure you have a good network connection and then try to login again.",
-        "category": "technical"
+        "answer": 'Ensure you have a good network connection and then try to login again.',
+        "category": 'technical'
     },
     {
-        "question": "What is VREG?",
-        "answer": "The National Vehicle Registry (VREG) is the centralized database for all vehicles in Nigeria through unique Vehicle Identification Numbers (VIN). It stores detailed vehicular information such as specifications, ownership, and history of each vehicle in Nigeria.",
-        "category": "general"
+        "question": 'What is VREG?',
+        "answer": 'The National Vehicle Registry (VREG) is the centralized database for all vehicles in Nigeria through unique Vehicle Identification Numbers (VIN). It stores detailed vehicular information such as specifications, ownership, and history of each vehicle in Nigeria.',
+        "category": 'general'
     },
     {
-        "question": "What is the purpose of VREG?",
-        "answer": "VREG was created by the Federal Ministry of Finance as a solution to customs duty evasion, vehicle theft, vehicle-related crimes, and ineffective vehicle insurance coverage. All vehicle owners are required to register their vehicles using the VIN on the VREG portal.",
-        "category": "general"
+        "question": 'What is the purpose of VREG?',
+        "answer": 'VREG was created by the Federal Ministry of Finance as a solution to customs duty evasion, vehicle theft, vehicle-related crimes, and ineffective vehicle insurance coverage. All vehicle owners are required to register their vehicles using the VIN on the VREG portal.',
+        "category": 'general'
     },
     {
-        "question": "What documents do I need for VREG registration?",
+        "question": 'What documents do I need for VREG registration?',
         "answer": "You'll need: Valid ID/Passport, Vehicle purchase receipt, Customs clearance certificate, Insurance certificate, Vehicle inspection report, and your Tax Identification Number (TIN).",
-        "category": "general"
+        "category": 'general'
     },
     {
-        "question": "How can I contact VREG support?",
-        "answer": "You can contact VREG support via: Email: support@vreg.gov.ng, Payment issues: payments@vreg.gov.ng, Phone: Contact helpdesk, Visit: Physical walk-in support, Website: www.vreg.gov.ng",
-        "category": "general"
+        "question": 'How can I contact VREG support?',
+        "answer": 'You can contact VREG support via: Email: support@vreg.gov.ng, Payment issues: payments@vreg.gov.ng, Phone: Contact helpdesk, Visit: Physical walk-in support, Website: www.vreg.gov.ng',
+        "category": 'general'
     }
 ]
 
@@ -198,17 +230,33 @@ class HyperlinkProcessor:
     @staticmethod
     def convert_to_hyperlinks(text: str) -> str:
         """Convert URLs and email addresses to HTML hyperlinks"""
-        # Email regex pattern
+        # Use placeholders to prevent nested conversions
+        placeholders = {}
+        placeholder_counter = [0]
+        
+        def create_placeholder(content):
+            placeholder = f"___PLACEHOLDER_{placeholder_counter[0]}___"
+            placeholders[placeholder] = content
+            placeholder_counter[0] += 1
+            return placeholder
+        
+        # STEP 1: Convert email addresses to mailto links with placeholders
         email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
         
-        # URL regex pattern (matches www.domain.com and full URLs)
+        def email_replacer(match):
+            email = match.group(1)
+            link = f'<a href="mailto:{email}" style="color: #0066cc; text-decoration: underline; font-weight: 500;">{email}</a>'
+            return create_placeholder(link)
+        
+        result = re.sub(email_pattern, email_replacer, text)
+        
+        # STEP 2: Convert URLs to hyperlinks (emails are now placeholders, so won't be affected)
         url_pattern = r'((?:https?://)?(?:www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)'
         
-        # First convert URLs (avoiding emails)
         def url_replacer(match):
             url = match.group(1)
-            # Skip if it's an email address
-            if '@' in url:
+            # Skip if it's a placeholder
+            if '___PLACEHOLDER_' in url:
                 return url
             
             # Handle specific domain mappings
@@ -219,25 +267,20 @@ class HyperlinkProcessor:
                 elif 'www.trade.gov.ng' in url:
                     href = url.replace('www.trade.gov.ng', 'https://trade.gov.ng')
                 elif url.startswith('www.'):
-                    href = f'https://{url[4:]}'  # Remove 'www.' and add https://
+                    href = f'https://{url[4:]}'
                 else:
                     href = f'https://{url}'
             
-            return f'<a href="{href}" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline; font-weight: 500;">{url}</a>'
+            link = f'<a href="{href}" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline; font-weight: 500;">{url}</a>'
+            return create_placeholder(link)
         
-        # Apply URL conversion
-        result = re.sub(url_pattern, url_replacer, text)
+        result = re.sub(url_pattern, url_replacer, result)
         
-        # Then convert email addresses to mailto links
-        def email_replacer(match):
-            email = match.group(1)
-            return f'<a href="mailto:{email}" style="color: #0066cc; text-decoration: underline; font-weight: 500;">{email}</a>'
-        
-        # Apply email conversion
-        result = re.sub(email_pattern, email_replacer, result)
+        # STEP 3: Replace placeholders with actual HTML
+        for placeholder, content in placeholders.items():
+            result = result.replace(placeholder, content)
         
         return result
-    
     @staticmethod
     def process_faq_answer(answer: str) -> str:
         """Process FAQ answer to include hyperlinks"""
@@ -299,25 +342,16 @@ class VREGRAGSystem:
         try:
             results = self.collection.query(
                 query_texts=[query],
-                n_results=n_results,
-                include=['documents', 'metadatas', 'distances']
+                n_results=n_results
             )
             
             relevant_faqs = []
-            if results['documents'] and results['documents'][0]:
-                for i, doc in enumerate(results['documents'][0]):
-                    metadata = results['metadatas'][0][i]
-                    distance = results['distances'][0][i]
-                    
-                    # Process answer with hyperlinks
-                    processed_answer = self.hyperlink_processor.process_faq_answer(metadata['answer'])
-                    
+            if results['metadatas'] and len(results['metadatas'][0]) > 0:
+                for metadata in results['metadatas'][0]:
                     relevant_faqs.append({
-                        'question': metadata['question'],
-                        'answer': metadata['answer'],  # Keep original for context
-                        'answer_with_links': processed_answer,  # Processed version with links
-                        'category': metadata['category'],
-                        'relevance_score': 1 - distance  # Convert distance to similarity score
+                        "question": metadata['question'],
+                        "answer": metadata['answer'],
+                        "category": metadata['category']
                     })
             
             return relevant_faqs
@@ -326,83 +360,100 @@ class VREGRAGSystem:
             print(f"❌ Error retrieving FAQs: {e}")
             return []
     
-    def generate_rag_response(self, user_query: str, user_name: str = None) -> Dict:
-        """Generate response using RAG approach with hyperlink processing"""
+    def generate_rag_response(self, user_query: str, user_name: str = None, conversation_history: List[Dict] = None) -> Dict:
+        """Generate response using RAG with conversation context"""
         try:
             # Step 1: Retrieve relevant FAQs
             relevant_faqs = self.retrieve_relevant_faqs(user_query, n_results=3)
             
-            # Step 2: Prepare context from retrieved FAQs
+            # Step 2: Build context from relevant FAQs
             context = ""
             if relevant_faqs:
-                context = "Here are some relevant FAQs from the VREG knowledge base:\n\n"
+                context = "Here are relevant FAQs that might help answer the question:\n\n"
                 for i, faq in enumerate(relevant_faqs, 1):
-                    context += f"{i}. Q: {faq['question']}\n   A: {faq['answer']}\n\n"
+                    context += f"FAQ {i}:\nQ: {faq['question']}\nA: {faq['answer']}\n\n"
             
-            # Step 3: Create enhanced system prompt with name context
-            name_context = f"The user's name is {user_name}. Use their name naturally in your responses when appropriate." if user_name else ""
+            # Step 3: Create system prompt with user context
+            user_context = f"The user's name is {user_name}." if user_name else ""
             
-            system_prompt = f"""You are a helpful AI assistant for the VREG (National Vehicle Registry) platform in Nigeria. 
+            # ✅ UPDATED: Friendly but concise system prompt
+            system_prompt = f"""You are a friendly VREG support assistant helping users with vehicle registration in Nigeria. {user_context}
 
-{name_context}
+TONE & STYLE - THIS IS CRITICAL:
+- Be warm, helpful, and show you care about their issue
+- Keep responses SHORT - aim for 2-4 sentences maximum
+- Use natural, conversational language like you're texting a friend
+- Show empathy when they're frustrated ("I know this is frustrating, let's fix it!")
+- End with a friendly offer to help more
 
-Your role is to help users with vehicle registration, VIN validation, payment issues, customs clearance, and other VREG-related queries.
+AVOID THESE:
+- Long explanations - get to the point quickly
+- Robotic phrases like "I have processed..." or "Please be advised..."
+- Repeating yourself or over-explaining
+- Multiple paragraphs when 1-2 sentences work
+- Using their name repeatedly (sounds fake)
 
-INSTRUCTIONS:
-1. Use the provided knowledge base to answer questions when relevant
-2. If the user's question is covered in your knowledge base, use that information as your primary source
-3. Be helpful, professional, and specific in your responses
-4. If you don't have specific information, guide users to contact support@vreg.gov.ng or payments@vreg.gov.ng for payment issues
-5. Always maintain a helpful and courteous tone
-6. Provide step-by-step instructions when applicable
-7. When mentioning websites or email addresses, use the exact format provided (e.g., www.vreg.gov.ng, support@vreg.gov.ng)
-8. Continue conversations naturally - do not ask for the user's name again if you already know it
-9. Use names ONLY in the initial greeting. After that, avoid using names entirely unless the conversation has been going on for a very long time and you want to add a personal touch
-10. Avoid using their name in every response as it sounds robotic
-11. When referencing your knowledge base, use natural phrases like "based on the information available to me," "from what I can see," or "according to our system" - never mention FAQs, documentation, or knowledge base directly
-12. Keep responses concise but warm - aim for 2-3 short paragraphs maximum
-13. Use friendly, conversational language with phrases like "I'd be happy to help" and "Let me know if..."
-14. Show empathy when users have problems ("I'm sorry to hear..." "Let me help you sort this out")
-15. Ask follow-up questions in a caring way to gather specific details
-16. After the first greeting, use warm transitions like "I'd be happy to help with..." instead of formal re-introductions
-17. End responses with supportive offers like "I'm here to help" or "Let me know if you need anything else"
-18. Avoid repetitive greetings - after the first interaction, jump straight to helping
-19. When users say "thank you," "thanks," or are clearly ending the conversation, keep responses brief and natural - just acknowledge their thanks and offer future help in 1-2 sentences maximum
-20. Avoid adding website links, contact information, or promotional text when users are simply expressing gratitude or saying goodbye
-21. For thank you/goodbye responses, use simple phrases like: "You're very welcome!" "Happy to help!" "Take care!" followed by only "Feel free to reach out if you need anything else"
-22. Do not repeat contact information or website details unless the user specifically asks for it
+GOOD EXAMPLES:
+✅ "I see the issue! Check your spam folder - the link might be hiding there. Still can't find it? Let me know!"
+✅ "Ah, that's frustrating! Your VIN needs manual validation. Just submit it with the HS code and it'll be reviewed soon."
+✅ "Got it! Login to your dashboard, click Certificates, and search by your invoice number. Easy!"
 
-IMPORTANT CONTACT INFORMATION:
-- General support: support@vreg.gov.ng
-- Payment issues: payments@vreg.gov.ng
+BAD EXAMPLES (too long/robotic):
+❌ "I understand you are experiencing difficulties with locating your confirmation link. This is a common issue that many users face. Let me provide you with some steps..."
+❌ "Thank you for reaching out. I would be happy to assist you with this matter. Based on the information provided in our system..."
+
+KEY RULES:
+1. Jump straight to the solution - no long intros
+2. Use the FAQ context provided but rewrite in your own friendly words
+3. If you don't know, guide them to support@vreg.gov.ng or payments@vreg.gov.ng (payment issues)
+4. Always use exact format for contacts: www.vreg.gov.ng, support@vreg.gov.ng
+5. Pay attention to conversation history - if they already tried your advice, offer alternatives instead of repeating
+6. For "thank you" messages: keep it super brief - just "You're welcome! Happy to help 😊" or similar
+7. Use names ONLY in initial greeting, then avoid unless adding personal touch after long conversation
+8. When mentioning websites/emails, use natural phrasing, never mention "FAQs" or "knowledge base"
+
+CONTACT INFO (use when relevant):
+- General: support@vreg.gov.ng
+- Payments: payments@vreg.gov.ng
 - Website: www.vreg.gov.ng
 - TIN validation: www.trade.gov.ng (Agencies > FIRS)"""
             
-            # Step 4: Create user prompt with context
-            if context:
-                user_prompt = f"{context}\n\nUser Question: {user_query}\n\nPlease provide a helpful response based on the FAQ context above and your knowledge of VREG processes."
-            else:
-                user_prompt = f"User Question: {user_query}\n\nPlease provide a helpful response about VREG processes."
+            # Step 4: Build conversation messages with history
+            # ✅ UPDATED: Changed to Anthropic format
+            messages = []
             
-            # Step 5: Generate response using Groq
-            chat_completion = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                model="llama-3.1-8b-instant",
-                temperature=0.1,  # Lower temperature for more consistent responses
-                max_tokens=800,
-                top_p =0.9,
-                frequency_penalty=0.1
+            # Add conversation history if available (last 6 messages)
+            if conversation_history:
+                for msg in conversation_history[-6:]:
+                    messages.append({
+                        "role": "user" if msg['role'] == "user" else "assistant",
+                        "content": msg['content']
+                    })
+            
+            # Step 5: Add current user query with context
+            if context:
+                current_prompt = f"{context}\n\nUser Question: {user_query}\n\nProvide a friendly, concise response based on the FAQ context and conversation history. Remember: be warm but brief!"
+            else:
+                current_prompt = f"User Question: {user_query}\n\nProvide a friendly, concise response about VREG processes."
+            
+            messages.append({"role": "user", "content": current_prompt})
+            
+            # Step 6: Generate response using Claude
+            # ✅ UPDATED: Changed to Anthropic API format
+            response = client.messages.create(
+                model="claude-sonnet-4-5-20250929",  # ✅ Using Claude Sonnet 4.5
+                max_tokens=450,  # ✅ Limit for concise responses
+                temperature=0.7,  # ✅ Natural, conversational tone
+                system=system_prompt,  # ✅ System prompt separate in Anthropic
+                messages=messages
             )
             
-            raw_response = chat_completion.choices[0].message.content
+            raw_response = response.content[0].text  # ✅ Extract text from Claude response
             
-            # Step 6: Process response to add hyperlinks
+            # Step 7: Process response to add hyperlinks
             processed_response = self.hyperlink_processor.convert_to_hyperlinks(raw_response)
             
-            # Step 7: Return both versions
+            # Step 8: Return both versions
             return {
                 "response": raw_response,
                 "response_with_links": processed_response,
@@ -412,7 +463,7 @@ IMPORTANT CONTACT INFORMATION:
             
         except Exception as e:
             print(f"❌ Error generating RAG response: {e}")
-            error_message = "I apologize, but I'm having trouble processing your request right now. Please contact support@vreg.gov.ng for assistance."
+            error_message = "Oops! I'm having a moment here. Can you try again, or reach out to support@vreg.gov.ng?"
             return {
                 "response": error_message,
                 "response_with_links": self.hyperlink_processor.convert_to_hyperlinks(error_message),
@@ -479,7 +530,12 @@ def extract_name_from_message(message: str) -> str:
 @app.route("/chat", methods=["POST"])
 def chat():
     user_input = request.json.get("message")
-    conversation_id = request.json.get("conversation_id", "default")  # Get conversation ID from request
+    conversation_id = request.json.get("conversation_id")
+    
+    # 🔧 FIX #2: Generate unique conversation_id if not provided
+    if not conversation_id or conversation_id == "default":
+        conversation_id = str(uuid.uuid4())
+        print(f"🆕 Generated new conversation_id: {conversation_id}")
     
     if not user_input:
         return jsonify({"error": "No message received"}), 400
@@ -496,8 +552,12 @@ def chat():
                 conversation_manager.set_user_name(conversation_id, extracted_name)
                 user_name = extracted_name
                 # Acknowledge the name and ask how to help
-                response = f"Hello {user_name}! It's nice to meet you. How can I assist you today with the VREG platform? Do you have any questions, need help with vehicle registration, or perhaps you're experiencing some issues that you'd like me to help resolve?"
+                response = f"Hello {user_name}! Nice to meet you 😊 How can I help you with VREG today?"
                 processed_response = rag_system.hyperlink_processor.convert_to_hyperlinks(response)
+                
+                # 🆕 Store the bot's greeting in history
+                conversation_manager.add_message(conversation_id, "assistant", response)
+                
                 return jsonify({
                     "reply": processed_response,
                     "raw_reply": response,
@@ -511,26 +571,43 @@ def chat():
                 # Don't treat greetings as requests for help
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
                 if any(greeting in user_input.lower() for greeting in greeting_words):
+                    response = "Hello! May I know your name?"
+                    conversation_manager.add_message(conversation_id, "assistant", response)
                     return jsonify({
-                        "reply": "Hello! May I know your name?",
-                        "raw_reply": "Hello! May I know your name?",
+                        "reply": response,
+                        "raw_reply": response,
                         "relevant_faqs": [],
                         "context_used": False,
                         "asking_for_name": True,
                         "conversation_id": conversation_id
                     })
                 else:
+                    response = "May I know your name?"
+                    conversation_manager.add_message(conversation_id, "assistant", response)
                     return jsonify({
-                        "reply": "May I know your name?",
-                        "raw_reply": "May I know your name?",
+                        "reply": response,
+                        "raw_reply": response,
                         "relevant_faqs": [],
                         "context_used": False,
                         "asking_for_name": True,
                         "conversation_id": conversation_id
                     })
         
-        # Generate response using RAG with user name
-        response_data = rag_system.generate_rag_response(user_input, user_name)
+        # 🆕 Store user message in history
+        conversation_manager.add_message(conversation_id, "user", user_input)
+        
+        # 🆕 Get conversation history
+        conversation_history = conversation_manager.get_conversation_history(conversation_id)
+        
+        # Generate response using RAG with user name and conversation history
+        response_data = rag_system.generate_rag_response(
+            user_input, 
+            user_name,
+            conversation_history  # 🆕 Pass conversation history
+        )
+        
+        # 🆕 Store bot response in history
+        conversation_manager.add_message(conversation_id, "assistant", response_data["response"])
         
         return jsonify({
             "reply": response_data["response_with_links"],  # Send processed response with links
@@ -580,9 +657,11 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "rag_system": "operational",
+        "model": "claude-sonnet-4-5",
         "total_faqs": len(vreg_faqs),
         "hyperlink_processing": "enabled",
-        "session_support": "enabled"
+        "session_support": "enabled",
+        "conversation_memory": "enabled"
     })
 
 @app.route("/process-text", methods=["POST"])
@@ -603,35 +682,37 @@ def process_text():
         print(f"❌ Error in process-text endpoint: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
-if __name__ == "__main__":
-    app.run(debug=True)
-# Add these imports at the top if not already there
-from flask import send_from_directory, send_file
 
-# Add this route to serve your frontend
+# ==========================================================
+# ✅ Frontend and Static Serving
+# ==========================================================
+
 @app.route('/')
 def serve_frontend():
     """Serve the main frontend page"""
     try:
         return send_file('frontend/index2.html')
-    except FileNotFoundError:
-        return "Frontend not found. Please ensure frontend/index2.html exists.", 404
+    except Exception as e:
+        print(f"Error serving frontend: {e}")
+        return f"Frontend error: {e}", 500
 
-# Replace your existing if __name__ == "__main__": section with this:
-# Add these imports at the top if not already there
-from flask import send_from_directory, send_file
-
-# Add this route to serve your frontend
-@app.route('/')
-def serve_frontend():
-    """Serve the main frontend page"""
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files"""
     try:
-        return send_file('frontend/index2.html')
-    except FileNotFoundError:
-        return "Frontend not found. Please ensure frontend/index2.html exists.", 404
+        return send_from_directory('frontend', filename)
+    except Exception as e:
+        return f"Static file error: {e}", 404
 
-# Replace your existing if __name__ == "__main__": section with this:
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
-    debug_mode = os.environ.get('FLASK_ENV') != 'production'
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    port = int(os.environ.get('PORT', 8080))
+    print(f"🚀 Starting VREG Chatbot with Claude Sonnet 4.5 on port {port}")
+    print(f"📁 Working directory: {os.getcwd()}")
+    print(f"📄 Frontend exists: {os.path.exists('frontend/index2.html')}")
+    
+    app.run(
+        host='0.0.0.0',  # MUST be 0.0.0.0 for Cloud Run
+        port=port,
+        debug=False,  # Disable debug in production
+        threaded=True
+    )
