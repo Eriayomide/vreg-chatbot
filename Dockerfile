@@ -1,33 +1,34 @@
-# Use Python 3.11 instead of 3.13 to avoid compatibility issues
 FROM python:3.11.9-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies needed for some Python packages
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (for better caching)
-COPY backend/requirements.txt .
-
-# Upgrade pip and install Python dependencies
+# Copy requirements and install Python dependencies
+COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip cache purge
-RUN pip install --no-cache-dir --force-reinstall -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire project structure
-COPY . .
+# Pre-download and cache the sentence-transformers model during build
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+# Copy all project files
+COPY backend/ ./
+COPY frontend/ ./frontend/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PORT=10000
+ENV PORT=8080
+# ENV SENTENCE_TRANSFORMERS_HOME=/root/.cache/torch/sentence_transformers
 
-# Expose the port
-EXPOSE 10000
+# Expose port
+EXPOSE 8080
 
-# Change to backend directory and run the Flask app
-WORKDIR /app/backend
+# Start the application
 CMD ["python", "vreg_app.py"]
