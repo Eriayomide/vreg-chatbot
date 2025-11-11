@@ -87,6 +87,19 @@ class ConversationManager:
                 return conv['messages'][-max_messages:]
             return []
     
+    def get_full_conversation(self, conversation_id: str) -> Dict:
+        """🆕 NEW: Get full conversation data including all messages"""
+        with self.lock:
+            conv = self.conversations.get(conversation_id)
+            if conv:
+                return {
+                    'user_name': conv.get('user_name'),
+                    'messages': conv.get('messages', []),
+                    'created_at': conv.get('created_at'),
+                    'last_activity': conv.get('last_activity')
+                }
+            return None
+    
     def cleanup_old_conversations(self, max_age_hours: int = 24):
         """Clean up conversations older than max_age_hours"""
         with self.lock:
@@ -622,6 +635,48 @@ def chat():
         print(f"❌ Error in chat endpoint: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
+# 🆕 NEW ENDPOINT: Get conversation history for persistence
+@app.route("/get-conversation", methods=["POST"])
+def get_conversation():
+    """Get full conversation history for a given conversation_id"""
+    conversation_id = request.json.get("conversation_id")
+    
+    if not conversation_id:
+        return jsonify({"error": "No conversation_id provided"}), 400
+    
+    try:
+        conversation_data = conversation_manager.get_full_conversation(conversation_id)
+        
+        if conversation_data:
+            # Process messages to add hyperlinks
+            processed_messages = []
+            for msg in conversation_data.get('messages', []):
+                processed_content = rag_system.hyperlink_processor.convert_to_hyperlinks(msg['content'])
+                processed_messages.append({
+                    'role': msg['role'],
+                    'content': processed_content,
+                    'raw_content': msg['content'],
+                    'timestamp': msg.get('timestamp')
+                })
+            
+            return jsonify({
+                "success": True,
+                "conversation_id": conversation_id,
+                "user_name": conversation_data.get('user_name'),
+                "messages": processed_messages,
+                "created_at": conversation_data.get('created_at'),
+                "last_activity": conversation_data.get('last_activity')
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "Conversation not found"
+            }), 404
+    
+    except Exception as e:
+        print(f"❌ Error in get-conversation endpoint: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
 @app.route("/reset-session", methods=["POST"])
 def reset_session():
     """Reset user session (clear name)"""
@@ -661,7 +716,8 @@ def health_check():
         "total_faqs": len(vreg_faqs),
         "hyperlink_processing": "enabled",
         "session_support": "enabled",
-        "conversation_memory": "enabled"
+        "conversation_memory": "enabled",
+        "conversation_persistence": "enabled"  # 🆕 NEW
     })
 
 @app.route("/process-text", methods=["POST"])
