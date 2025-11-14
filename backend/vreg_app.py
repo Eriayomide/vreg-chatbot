@@ -141,6 +141,11 @@ vreg_faqs = [
         "category": 'registration'
     },
     {
+      "question": 'How much is registeration',
+        "answer": 'Registration fees differ per vehicle. Kindly contact our customer service desk for an accurate fee',
+        "category":'registration'  
+    },
+    {
         "question": "The portal is not recognizing my VIN, showing 'Warning! This is a non-standard VIN'",
         "answer": 'This VIN appears to be non-standard and requires manual validation.\nPlease enter the HS code and VIN number, then click “Submit.”\nWhen the prompt appears, select “Decode Manually,” enter the vehicle details, and click “Submit” again.\nAfter submission, kindly wait while the VIN is being validated.',
         "category": 'vin_validation'
@@ -394,7 +399,7 @@ class VREGRAGSystem:
 
 TONE & STYLE - THIS IS CRITICAL:
 - Be warm, helpful, and show you care about their issue
-- Keep responses SHORT - aim for 2-4 sentences maximum
+- Keep responses SHORT - aim for 1-2 sentences maximum
 - Use natural, conversational language like you're texting a friend
 - Show empathy when they're frustrated ("I know this is frustrating, let's fix it!")
 - End with a friendly offer to help more
@@ -455,7 +460,7 @@ CONTACT INFO (use when relevant):
             # ✅ UPDATED: Changed to Anthropic API format
             response = client.messages.create(
                 model="claude-sonnet-4-5-20250929",  # ✅ Using Claude Sonnet 4.5
-                max_tokens=450,  # ✅ Limit for concise responses
+                max_tokens=300,  # ✅ Limit for concise responses
                 temperature=0.7,  # ✅ Natural, conversational tone
                 system=system_prompt,  # ✅ System prompt separate in Anthropic
                 messages=messages
@@ -503,7 +508,7 @@ def extract_name_from_message(message: str) -> str:
         r"it's\s+(\w+)",
         r"this is\s+(\w+)",
         r"name:\s*(\w+)",
-        r"^(\w+)$"  # Single word ONLY if it looks like a proper name
+        r"^([a-zA-Z]{2,})$"  # Single word with at least 2 letters (any case)
     ]
     
     # Expanded list of common non-names to avoid
