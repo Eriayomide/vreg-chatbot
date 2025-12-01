@@ -766,7 +766,7 @@ def serve_static(filename):
         return f"Static file error: {e}", 404
 
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 8083))
     print(f"🚀 Starting VREG Chatbot with Claude Sonnet 4.5 on port {port}")
     print(f"📁 Working directory: {os.getcwd()}")
     print(f"📄 Frontend exists: {os.path.exists('frontend/index2.html')}")
